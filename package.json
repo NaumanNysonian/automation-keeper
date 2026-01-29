@@ -3,13 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3007",
+    "dev:port": "next dev -p 3007",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3007",
+    "start:port": "next start -p 3007",
+    "dev:server": "NODE_ENV=development node server.js",
+    "start:server": "NODE_ENV=production node server.js",
     "lint": "eslint"
   },
   "dependencies": {
     "clsx": "^2.1.1",
+    "dotenv": "^16.4.1",
     "framer-motion": "^12.29.2",
     "googleapis": "^170.1.0",
     "lucide-react": "^0.563.0",
