@@ -15,10 +15,12 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
 type AccessRole = "owner" | "editor" | "viewer";
 type Provider = "apps-script" | "n8n";
 type Status = "healthy" | "degraded" | "failed" | "paused";
+type Lifecycle = "active" | "inactive" | "dead";
 
 interface AccessGrant {
   user: string;
@@ -39,6 +41,8 @@ interface Automation {
   access: AccessGrant[];
   sheetUrl?: string | null;
   files?: string[];
+  lifecycle: Lifecycle;
+  department?: string;
 }
 
 interface GoogleAutomationPayload {
@@ -50,6 +54,7 @@ interface GoogleAutomationPayload {
   createdAt?: string;
   sheetUrl?: string | null;
   files?: string[];
+  department?: string;
 }
 
 const providerStyle: Record<
@@ -138,13 +143,23 @@ function AccessPill({ grant }: { grant: AccessGrant }) {
 
 export default function Home() {
   const [automations, setAutomations] = useState<Automation[]>([]);
-  const [syncing, setSyncing] = useState(false);
-  const [authNeeded, setAuthNeeded] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [userEmail, setUserEmail] = useState("");
   const [pushedCount, setPushedCount] = useState<number | null>(null);
   const [selected, setSelected] = useState<Automation | null>(null);
+  const [lifecycleFilter, setLifecycleFilter] = useState<"all" | Lifecycle>("all");
+  const [theme] = useState<"light" | "dark">("dark");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [showManual, setShowManual] = useState(false);
+  const [manual, setManual] = useState({
+    id: "",
+    name: "",
+    owner: "",
+    provider: "apps-script" as Provider,
+    status: "healthy" as Status,
+    department: "",
+    sheetUrl: "",
+    tags: "",
+  });
+  const [manualMsg, setManualMsg] = useState<string | null>(null);
 
   const uniqueUsers = useMemo(
     () =>
@@ -154,12 +169,45 @@ export default function Home() {
     [automations],
   );
 
+  const failing = useMemo(
+    () => automations.filter((a) => a.status === "failed"),
+    [automations],
+  );
+
+  const lifecycleCounts = useMemo(() => {
+    return automations.reduce(
+      (acc, a) => {
+        acc[a.lifecycle] = (acc[a.lifecycle] || 0) + 1;
+        return acc;
+      },
+      { active: 0, inactive: 0, dead: 0 } as Record<Lifecycle, number>,
+    );
+  }, [automations]);
+
+  const displayedAutomations = useMemo(() => {
+    const byLifecycle =
+      lifecycleFilter === "all"
+        ? automations
+        : automations.filter((a) => a.lifecycle === lifecycleFilter);
+
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) return byLifecycle;
+
+    return byLifecycle.filter((a) => {
+      return (
+        a.name.toLowerCase().includes(term) ||
+        a.owner.toLowerCase().includes(term) ||
+        a.tags.some((t) => t.toLowerCase().includes(term))
+      );
+    });
+  }, [automations, lifecycleFilter, searchTerm]);
+
   const statCards = useMemo(
     () => [
       {
         title: "Total Automations",
         value: automations.length,
-        delta: "+3 this week",
+        delta: `${automations.length ? "+" : ""}${automations.length} tracked`,
         icon: Workflow,
         gradient: "from-zinc-700/80 via-zinc-800/80 to-zinc-900/80",
       },
@@ -182,20 +230,24 @@ export default function Home() {
         gradient: "from-neutral-700/80 via-neutral-800/80 to-neutral-900/80",
       },
       {
-        title: "Attention Needed",
-        value: automations.filter((a) => a.status !== "healthy").length,
-        delta: "degraded / failed right now",
+        title: "Lifecycle",
+        value: `${lifecycleCounts.active}/${lifecycleCounts.inactive}/${lifecycleCounts.dead}`,
+        delta: "active / inactive / dead",
         icon: Activity,
         gradient: "from-slate-700/80 via-slate-800/80 to-slate-900/80",
       },
     ],
-    [automations, uniqueUsers],
+    [automations, uniqueUsers, lifecycleCounts],
   );
 
-  const failing = useMemo(
-    () => automations.filter((a) => a.status === "failed"),
-    [automations],
-  );
+  function deriveLifecycle(lastRun: string): Lifecycle {
+    const diffMinutes =
+      (Date.now() - new Date(lastRun || new Date().toISOString()).getTime()) /
+      60000;
+    if (diffMinutes <= 40) return "active";
+    if (diffMinutes <= 60 * 24 * 2) return "inactive"; // >40 mins and <= 48h
+    return "dead"; // > 48h
+  }
 
   useEffect(() => {
     // Fetch any automations that were pushed in via /api/ingest/apps-script
@@ -222,6 +274,10 @@ export default function Home() {
               files: Array.isArray(item.files)
                 ? item.files.filter((f): f is string => typeof f === "string")
                 : [],
+              lifecycle: deriveLifecycle(
+                item.updatedAt || item.createdAt || new Date().toISOString(),
+              ),
+              department: item.department ?? "general",
               access: [
                 {
                   user: item.owner || "Owner",
@@ -233,98 +289,39 @@ export default function Home() {
 
           setAutomations((prev) => {
             const others = prev.filter((a) => a.provider !== "apps-script");
-            return [...others, ...mapped];
-          });
-          setPushedCount(mapped.length);
-        }
-      })
+              return [...others, ...mapped];
+            });
+            setPushedCount(mapped.length);
+          }
+        })
       .catch(() => {
         // ignore fetch errors for local-only use
       });
   }, []);
 
-  async function connectGoogle() {
-    setSyncError(null);
-    setAuthNeeded(false);
-    setShowAuthModal(false);
-    try {
-      const res = await fetch("/api/google/auth/url");
-      const data = await res.json();
-      if (data.url) {
-        window.location.href = data.url;
-      } else {
-        setSyncError("Could not start Google OAuth.");
-      }
-    } catch {
-      setSyncError("Could not reach auth endpoint.");
-    }
-  }
-
-  async function syncGoogle() {
-    setSyncing(true);
-    setSyncError(null);
-    try {
-      const res = await fetch("/api/apps-script/list");
-      if (res.status === 401) {
-        setAuthNeeded(true);
-        setSyncing(false);
-        return;
-      }
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || "Sync failed");
-      }
-      const data = await res.json();
-      const mapped: Automation[] = (data.automations || []).map(
-        (item: GoogleAutomationPayload) => ({
-          id: `gs-${item.id}`,
-          name: item.name || "Untitled script",
-          provider: "apps-script",
-          status: "healthy",
-          owner: item.owner || "Unknown",
-          description:
-            item.deployments?.[0]?.description ||
-            "Google Apps Script project",
-          tags: ["Apps Script"],
-          lastRun: item.updatedAt || item.createdAt || new Date().toISOString(),
-          latencyMs: 420,
-          successRate: 0.99,
-          access: [
-            {
-              user: item.owner || "Owner",
-              role: "owner",
-            },
-          ],
-        }),
-      );
-
-      setAutomations((prev) => {
-        const others = prev.filter((a) => a.provider !== "apps-script");
-        return [...others, ...mapped];
-      });
-      setAuthNeeded(false);
-    } catch (err) {
-      setSyncError(
-        err instanceof Error ? err.message : "Sync failed, try again.",
-      );
-    } finally {
-      setSyncing(false);
-    }
-  }
-
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[#030712] text-slate-50">
-      <div className="pointer-events-none absolute inset-0">
-        <div className="absolute -left-24 top-16 h-72 w-72 rounded-full bg-purple-500/20 blur-[110px]" />
-        <div className="absolute right-0 top-40 h-80 w-80 rounded-full bg-cyan-400/15 blur-[120px]" />
-        <div className="absolute -bottom-10 left-32 h-80 w-80 rounded-full bg-indigo-600/20 blur-[120px]" />
-      </div>
+    <div
+      className={clsx(
+        "relative min-h-screen overflow-hidden transition-colors",
+        theme === "light" ? "bg-slate-50 text-slate-900" : "bg-[#04070b] text-slate-50",
+      )}
+    >
+      {theme === "dark" && (
+        <div className="pointer-events-none absolute inset-0">
+          <div className="absolute -left-24 top-12 h-80 w-80 rounded-full bg-emerald-400/20 blur-[130px] animate-float-slower" />
+          <div className="absolute right-[-40px] top-24 h-96 w-96 rounded-full bg-amber-400/16 blur-[150px] animate-float-slow" />
+          <div className="absolute left-1/3 bottom-[-120px] h-[420px] w-[420px] rounded-full bg-sky-400/12 blur-[160px] animate-float" />
+          <div className="absolute inset-0 bg-grid-overlay" />
+          <div className="absolute inset-x-0 top-0 h-56 bg-radial-hero" />
+          <div className="absolute -right-40 bottom-0 h-64 w-[520px] rotate-12 bg-scan-beam" />
+        </div>
+      )}
 
-      <main className="relative mx-auto flex max-w-6xl flex-col gap-8 px-5 py-10 lg:px-8 lg:py-14">
+      <main className="relative mx-auto flex w-full max-w-screen-2xl flex-col gap-8 px-5 py-10 lg:px-8 lg:py-14">
         <header className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="mb-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs uppercase tracking-[0.16em] text-slate-200 backdrop-blur">
-              <Sparkles className="h-3.5 w-3.5 text-cyan-300" />
+              <Sparkles className="h-3.5 w-3.5 text-emerald-300" />
               Automation Command Deck
             </p>
             <h1 className="text-3xl font-semibold leading-tight text-white md:text-4xl">
@@ -337,110 +334,217 @@ export default function Home() {
           </div>
           <div className="flex flex-wrap items-center gap-3 justify-end">
             <button
-              onClick={() => setShowAuthModal(true)}
-              className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white backdrop-blur transition hover:border-white/25 hover:bg-white/10"
+              onClick={() => setShowManual((v) => !v)}
+              className="relative overflow-hidden rounded-full border border-white/15 bg-gradient-to-r from-emerald-700/80 via-slate-800 to-amber-700/70 px-4 py-2 text-sm font-semibold text-white shadow-[0_12px_40px_rgba(5,150,105,0.35)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_60px_rgba(245,158,11,0.35)]"
             >
-              Connect Google
+              {showManual ? "Close manual entry" : "Add manual entry"}
             </button>
-            <button
-              onClick={syncGoogle}
-              disabled={syncing}
-              className={clsx(
-                "rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white backdrop-blur transition hover:border-white/25 hover:bg-white/10",
-                syncing && "opacity-60 cursor-not-allowed",
-              )}
-            >
-              {syncing ? "Syncing…" : "Sync providers"}
-            </button>
-            <button className="relative overflow-hidden rounded-full border border-white/15 bg-gradient-to-r from-gray-700 via-gray-800 to-gray-900 px-4 py-2 text-sm font-semibold text-white shadow-[0_10px_40px_rgba(0,0,0,0.45)] hover:shadow-[0_12px_50px_rgba(0,0,0,0.55)] transition">
-              <span className="relative z-10">New automation</span>
-              <span className="absolute inset-0 bg-white/5 blur-lg" />
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-200">
+                <span className="opacity-70">View</span>
+                {(["all", "active", "inactive", "dead"] as const).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setLifecycleFilter(v)}
+                    className={clsx(
+                      "rounded-full px-3 py-1 font-semibold capitalize transition",
+                      lifecycleFilter === v
+                        ? "bg-white/20 text-white"
+                        : "text-slate-300 hover:bg-white/10",
+                    )}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-200">
+                <span className="opacity-70">Departments</span>
+                {[
+                  { label: "Ops", href: "/departments/operations" },
+                  { label: "Customer", href: "/departments/customer-service" },
+                  { label: "Marketing", href: "/departments/marketing" },
+                ].map((d) => (
+                  <a
+                    key={d.href}
+                    href={d.href}
+                    className="rounded-full px-3 py-1 font-semibold text-slate-200 hover:bg-white/10 transition"
+                  >
+                    {d.label}
+                  </a>
+                ))}
+              </div>
+              <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-200">
+                <span className="opacity-70">Providers</span>
+                <Link
+                  href="/"
+                  className="rounded-full px-3 py-1 font-semibold text-slate-200 hover:bg-white/10 transition"
+                >
+                  Apps Script
+                </Link>
+                <Link
+                  href="/workflows"
+                  className="rounded-full px-3 py-1 font-semibold text-slate-200 hover:bg-white/10 transition"
+                >
+                  n8n
+                </Link>
+              </div>
+            </div>
           </div>
         </header>
+        <div className="flex flex-wrap items-center gap-3">
+          <input
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search automations by name, owner, or tag..."
+            className={clsx(
+              "w-full md:w-1/2 rounded-xl border px-3 py-2 text-sm outline-none ring-0 transition",
+              theme === "light"
+                ? "border-slate-200 bg-white text-slate-900 placeholder:text-slate-400"
+                : "border-white/15 bg-white/5 text-white placeholder:text-slate-400",
+            )}
+          />
+        </div>
 
-        {authNeeded && (
-          <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100 backdrop-blur">
-            Connect Google to pull your Apps Script automations. Your tokens are
-            encrypted in an httpOnly cookie.
+        {showManual && (
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white shadow-lg">
+            <div className="flex flex-wrap gap-3">
+              <input
+                className="min-w-[200px] flex-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400"
+                placeholder="ID (required)"
+                value={manual.id}
+                onChange={(e) => setManual((m) => ({ ...m, id: e.target.value }))}
+              />
+              <input
+                className="min-w-[200px] flex-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400"
+                placeholder="Name"
+                value={manual.name}
+                onChange={(e) => setManual((m) => ({ ...m, name: e.target.value }))}
+              />
+              <input
+                className="min-w-[200px] flex-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400"
+                placeholder="Owner email"
+                value={manual.owner}
+                onChange={(e) => setManual((m) => ({ ...m, owner: e.target.value }))}
+              />
+              <select
+                className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white"
+                value={manual.provider}
+                onChange={(e) =>
+                  setManual((m) => ({ ...m, provider: e.target.value as Provider }))
+                }
+              >
+                <option value="apps-script">Apps Script</option>
+                <option value="n8n">n8n</option>
+              </select>
+              <select
+                className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white"
+                value={manual.status}
+                onChange={(e) =>
+                  setManual((m) => ({ ...m, status: e.target.value as Status }))
+                }
+              >
+                <option value="healthy">Healthy</option>
+                <option value="paused">Paused</option>
+                <option value="failed">Failed</option>
+                <option value="degraded">Degraded</option>
+              </select>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-3">
+              <input
+                className="min-w-[240px] flex-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400"
+                placeholder="Department (optional)"
+                value={manual.department}
+                onChange={(e) =>
+                  setManual((m) => ({ ...m, department: e.target.value }))
+                }
+              />
+              <input
+                className="min-w-[240px] flex-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400"
+                placeholder="Sheet URL (optional)"
+                value={manual.sheetUrl}
+                onChange={(e) => setManual((m) => ({ ...m, sheetUrl: e.target.value }))}
+              />
+              <input
+                className="min-w-[240px] flex-1 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400"
+                placeholder="Tags (comma separated)"
+                value={manual.tags}
+                onChange={(e) => setManual((m) => ({ ...m, tags: e.target.value }))}
+              />
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={async () => {
+                  setManualMsg(null);
+                  if (!manual.id) {
+                    setManualMsg("ID is required.");
+                    return;
+                  }
+                  const tagsArray = manual.tags
+                    ? manual.tags
+                        .split(",")
+                        .map((t) => t.trim())
+                        .filter(Boolean)
+                    : [];
+                  const payload =
+                    manual.provider === "apps-script"
+                      ? {
+                          automations: [
+                            {
+                              id: manual.id,
+                              name: manual.name,
+                              owner: manual.owner,
+                              status: manual.status,
+                              createdAt: new Date().toISOString(),
+                              updatedAt: new Date().toISOString(),
+                              sheetUrl: manual.sheetUrl || null,
+                              tags: tagsArray,
+                              department: manual.department || "general",
+                            },
+                          ],
+                        }
+                      : {
+                          workflows: [
+                            {
+                              id: manual.id,
+                              name: manual.name,
+                              owner: manual.owner,
+                              status: manual.status,
+                              createdAt: new Date().toISOString(),
+                              updatedAt: new Date().toISOString(),
+                              tags: tagsArray,
+                              department: manual.department || "general",
+                            },
+                          ],
+                        };
+                  const url =
+                    manual.provider === "apps-script"
+                      ? "/api/ingest/apps-script"
+                      : "/api/ingest/n8n";
+                  const res = await fetch(url, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                  });
+                  if (res.ok) {
+                    setManualMsg("Saved. Refresh to see it in the list.");
+                    setManual((m) => ({ ...m, id: "", name: "", owner: "", tags: "" }));
+                  } else {
+                    const text = await res.text();
+                    setManualMsg(`Error: ${text}`);
+                  }
+                }}
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
+              >
+                Save manual entry
+              </button>
+              {manualMsg && <span className="text-xs text-amber-200">{manualMsg}</span>}
+            </div>
           </div>
         )}
 
         {pushedCount !== null && (
           <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100 backdrop-blur">
             Loaded {pushedCount} automations pushed from Apps Script.
-          </div>
-        )}
-
-        {syncError && (
-          <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100 backdrop-blur">
-            {syncError}
-          </div>
-        )}
-
-        {showAuthModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
-            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/15 bg-[#0b1222] p-6 shadow-[0_30px_160px_rgba(0,0,0,0.6)]"
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.18em] text-cyan-200">
-                    Quick connect
-                  </p>
-                  <h2 className="text-xl font-semibold text-white">
-                    Sync Apps Script automations
-                  </h2>
-                </div>
-                <button
-                  onClick={() => setShowAuthModal(false)}
-                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-200 hover:bg-white/10"
-                >
-                  Close
-                </button>
-              </div>
-
-              <p className="mt-3 text-sm text-slate-300">
-                Enter the email you use for Apps Script. We&apos;ll open Google
-                sign-in in the next step; we never see your password.
-              </p>
-
-              <div className="mt-4 space-y-2">
-                <label className="text-xs uppercase tracking-[0.12em] text-slate-400">
-                  Google Workspace / Gmail
-                </label>
-                <input
-                  value={userEmail}
-                  onChange={(e) => setUserEmail(e.target.value)}
-                  placeholder="you@company.com"
-                  className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none ring-0 focus:border-cyan-300/60 focus:bg-white/10"
-                />
-              </div>
-
-              <div className="mt-5 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-300">
-                <div className="flex items-center gap-2">
-                  <div className="size-2 rounded-full bg-emerald-400 shadow-[0_0_0_6px_rgba(52,211,153,0.25)]" />
-                  Secure OAuth · no passwords stored
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setShowAuthModal(false)}
-                    className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white backdrop-blur transition hover:border-white/25 hover:bg-white/10"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={connectGoogle}
-                    className="rounded-full bg-gradient-to-r from-indigo-500 via-violet-500 to-cyan-400 px-4 py-2 text-sm font-semibold text-white shadow-[0_10px_40px_rgba(99,102,241,0.5)]"
-                  >
-                    Continue with Google
-                  </button>
-                </div>
-              </div>
-            </motion.div>
           </div>
         )}
 
@@ -451,7 +555,7 @@ export default function Home() {
               initial={{ opacity: 0, y: 18 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5 }}
-              className="relative overflow-hidden rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur-xl"
+              className="group relative overflow-hidden rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur-xl"
             >
               <div
                 className={clsx(
@@ -459,6 +563,7 @@ export default function Home() {
                   card.gradient,
                 )}
               />
+              <span className="card-shine" />
               <div className="relative flex items-start justify-between">
                 <div>
                   <p className="text-sm text-slate-200/80">{card.title}</p>
@@ -499,10 +604,10 @@ export default function Home() {
             </div>
 
             <div className="mt-4 space-y-3">
-              {automations.length === 0 ? (
+              {displayedAutomations.length === 0 ? (
                 <div className="flex items-center justify-between rounded-xl border border-dashed border-white/20 bg-white/5 p-4 text-sm text-slate-300">
                   <div>
-                    No automations yet. Push from Apps Script or click Connect Google + Sync.
+                    No automations yet. Push from Apps Script or POST data to the ingest APIs.
                   </div>
                   <div className="flex items-center gap-2">
                     <div className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse" />
@@ -510,7 +615,7 @@ export default function Home() {
                   </div>
                 </div>
               ) : (
-                automations.map((automation) => (
+                displayedAutomations.map((automation) => (
                   <motion.div
                     key={automation.id}
                     whileHover={{ scale: 1.01, translateY: -2 }}
@@ -634,10 +739,10 @@ export default function Home() {
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <div className="h-9 w-9 rounded-full bg-gradient-to-br from-indigo-400/70 to-cyan-400/80 text-center text-sm font-semibold leading-9 text-white">
-                          {user
-                            .split(" ")
-                            .map((p) => p[0])
+                          <div className="h-9 w-9 rounded-full bg-gradient-to-br from-emerald-400/70 to-amber-400/80 text-center text-sm font-semibold leading-9 text-white">
+                            {user
+                              .split(" ")
+                              .map((p) => p[0])
                             .join("")}
                         </div>
                         <div>
@@ -796,12 +901,12 @@ export default function Home() {
                           transition={{ duration: 0.6, delay: idx * 0.05 }}
                           className={clsx(
                             "absolute bottom-0 left-0 right-0 origin-bottom rounded-full bg-gradient-to-t",
-                            automation.status === "failed"
-                              ? "from-rose-500/60 to-rose-300/50"
-                              : "from-indigo-500/60 via-violet-500/60 to-cyan-400/70",
-                          )}
-                          style={{ height: "100%" }}
-                        />
+                              automation.status === "failed"
+                                ? "from-rose-500/60 to-rose-300/50"
+                                : "from-emerald-500/60 via-teal-500/60 to-amber-400/70",
+                            )}
+                            style={{ height: "100%" }}
+                          />
                       </div>
                     ))}
                   </div>

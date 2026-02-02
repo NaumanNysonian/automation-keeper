@@ -1,0 +1,22 @@
+[
+  {
+    "id": "local-n8n-1",
+    "name": "Local Workflow",
+    "owner": "you@example.com",
+    "status": "active"
+  },
+  {
+    "id": "demo-n8n-1",
+    "name": "Demo Workflow",
+    "owner": "Nauman@example.com",
+    "status": "active",
+    "createdAt": "2026-02-02T12:00:00Z",
+    "updatedAt": "2026-02-02T12:05:00Z",
+    "notes": "dummy payload",
+    "tags": [
+      "demo",
+      "n8n"
+    ],
+    "department": "operations"
+  }
+]

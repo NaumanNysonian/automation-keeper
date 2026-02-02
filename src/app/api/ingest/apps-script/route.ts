@@ -5,6 +5,7 @@ import fs from "fs/promises";
 const DATA_DIR = path.join(process.cwd(), ".data");
 const DATA_FILE = path.join(DATA_DIR, "apps-script.json");
 const CSV_FILE = path.join(DATA_DIR, "apps-script.csv");
+const N8N_FILE = path.join(DATA_DIR, "n8n.json");
 
 type AutomationRecord = {
   id: string;
@@ -14,7 +15,10 @@ type AutomationRecord = {
   updatedAt?: string | Date;
   sheetUrl?: string | null;
   files?: string[];
+  provider?: string;
 };
+
+export const dynamic = "force-dynamic";
 
 async function ensureDir() {
   await fs.mkdir(DATA_DIR, { recursive: true });
@@ -111,8 +115,9 @@ export async function POST(req: NextRequest) {
 
 export async function GET() {
   try {
-    const data = await fs.readFile(DATA_FILE, "utf8").catch(() => "[]");
-    const automations = JSON.parse(data);
+    const appData = await fs.readFile(DATA_FILE, "utf8").catch(() => "[]");
+    const n8nData = await fs.readFile(N8N_FILE, "utf8").catch(() => "[]");
+    const automations = [...JSON.parse(appData), ...JSON.parse(n8nData)];
     return NextResponse.json({ automations });
   } catch (err) {
     return NextResponse.json(
