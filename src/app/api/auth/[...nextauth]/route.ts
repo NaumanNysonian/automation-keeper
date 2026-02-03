@@ -1,7 +1,7 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
-import { pool } from "@/lib/db";
+import { prisma } from "@/lib/prisma";
 
 const handler = NextAuth({
   session: { strategy: "jwt" },
@@ -17,13 +17,9 @@ const handler = NextAuth({
         const password = credentials?.password || "";
         if (!email || !password) return null;
 
-        const { rows } = await pool.query(
-          `SELECT id, email, name, department, role, password_hash FROM users WHERE email = $1 LIMIT 1`,
-          [email],
-        );
-        if (!rows.length) return null;
-        const user = rows[0];
-        const ok = await bcrypt.compare(password, user.password_hash);
+        const user = await prisma.user.findUnique({ where: { email } });
+        if (!user) return null;
+        const ok = await bcrypt.compare(password, user.passwordHash);
         if (!ok) return null;
 
         return {
@@ -41,15 +37,29 @@ const handler = NextAuth({
       if (user) {
         token.department = (user as { department?: string }).department;
         token.role = (user as { role?: string }).role;
+        token.email = (user as { email?: string }).email;
       }
       return token;
     },
     async session({ session, token }) {
-      session.user = session.user || {};
-      (session.user as { department?: string }).department = token.department as
-        | string
-        | undefined;
-      (session.user as { role?: string }).role = token.role as string | undefined;
+      // Validate user still exists (e.g., if deleted)
+      const email = token.email as string | undefined;
+      if (email) {
+        const dbUser = await prisma.user.findUnique({
+          where: { email },
+          select: { email: true, name: true, department: true, role: true, id: true },
+        });
+        if (!dbUser) {
+          return { ...session, user: undefined };
+        }
+        session.user = {
+          ...session.user,
+          email: dbUser.email,
+          name: dbUser.name || undefined,
+        };
+        (session.user as { department?: string }).department = dbUser.department;
+        (session.user as { role?: string }).role = dbUser.role;
+      }
       return session;
     },
   },

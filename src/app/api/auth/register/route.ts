@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { ensureUserSchema, pool } from "@/lib/db";
+import { prisma } from "@/lib/prisma";
 
 export async function POST(req: Request) {
   try {
@@ -17,8 +17,6 @@ export async function POST(req: Request) {
       );
     }
 
-    await ensureUserSchema();
-
     const hash = await bcrypt.hash(password, 10);
     const role =
       process.env.ADMIN_EMAIL &&
@@ -26,24 +24,31 @@ export async function POST(req: Request) {
         ? "admin"
         : "user";
 
-    const { rows } = await pool.query(
-      `
-        INSERT INTO users (email, password_hash, name, department, role)
-        VALUES ($1, $2, NULLIF($3, ''), $4, $5)
-        ON CONFLICT (email) DO NOTHING
-        RETURNING id, email, name, department, role, created_at;
-      `,
-      [email, hash, name, department, role],
-    );
-
-    if (!rows.length) {
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) {
       return NextResponse.json(
         { error: "email already exists" },
         { status: 409 },
       );
     }
 
-    const user = rows[0];
+    const user = await prisma.user.create({
+      data: {
+        email,
+        passwordHash: hash,
+        name: name || null,
+        department,
+        role,
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        department: true,
+        role: true,
+        createdAt: true,
+      },
+    });
     return NextResponse.json({ user });
   } catch (err) {
     console.error("register error", err);

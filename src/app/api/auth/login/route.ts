@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { ensureUserSchema, pool } from "@/lib/db";
+import { prisma } from "@/lib/prisma";
 
 export async function POST(req: Request) {
   try {
@@ -15,25 +15,27 @@ export async function POST(req: Request) {
       );
     }
 
-    await ensureUserSchema();
+    const user = await prisma.user.findUnique({
+      where: { email },
+    });
 
-    const { rows } = await pool.query(
-      `SELECT id, email, name, department, role, password_hash FROM users WHERE email = $1 LIMIT 1;`,
-      [email],
-    );
-
-    if (!rows.length) {
+    if (!user) {
       return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
     }
 
-    const user = rows[0];
-    const ok = await bcrypt.compare(password, user.password_hash);
+    const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) {
       return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
     }
 
-    delete user.password_hash;
-    return NextResponse.json({ user });
+    const safeUser = {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      department: user.department,
+      role: user.role,
+    };
+    return NextResponse.json({ user: safeUser });
   } catch (err) {
     console.error("login error", err);
     return NextResponse.json({ error: "internal error" }, { status: 500 });
