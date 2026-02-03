@@ -4,12 +4,15 @@ const { parse } = require("url");
 const next = require("next");
 const path = require("path");
 
-require("dotenv").config({ path: path.resolve(__dirname, ".env.local") });
+const dotenv = require("dotenv");
+// Load .env first, then .env.local to allow overrides
+dotenv.config({ path: path.resolve(__dirname, ".env") });
+dotenv.config({ path: path.resolve(__dirname, ".env.local") });
 
 const dev = process.env.NODE_ENV !== "production";
 
 // Get from env
-const host = process.env.HOST || "localhost"; // your domain for logging/config
+const host = process.env.HOST || process.env.Host || "localhost"; // your domain for logging/config
 const port = parseInt(process.env.PORT || "3000", 10);
 
 // Always run locally (good for Apache reverse proxy)
