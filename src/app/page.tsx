@@ -6,6 +6,7 @@ import {
   Clock,
   ExternalLink,
   FileCode2,
+  LogOut,
   Shield,
   Sparkles,
   SquareArrowOutUpRight,
@@ -16,6 +17,8 @@ import {
 import clsx from "clsx";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useSession, signOut } from "next-auth/react";
 
 type AccessRole = "owner" | "editor" | "viewer";
 type Provider = "apps-script" | "n8n";
@@ -142,6 +145,8 @@ function AccessPill({ grant }: { grant: AccessGrant }) {
 }
 
 export default function Home() {
+  const router = useRouter();
+  const { status, data: session } = useSession();
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [pushedCount, setPushedCount] = useState<number | null>(null);
   const [selected, setSelected] = useState<Automation | null>(null);
@@ -160,6 +165,17 @@ export default function Home() {
     tags: "",
   });
   const [manualMsg, setManualMsg] = useState<string | null>(null);
+
+  const role = (session?.user as { role?: string })?.role || "user";
+  const dept =
+    ((session?.user as { department?: string })?.department || "general").toLowerCase();
+
+  // If session exists but no role (e.g., deleted user), force logout
+  useEffect(() => {
+    if (status === "authenticated" && !session?.user) {
+      signOut({ callbackUrl: "/login", redirect: true });
+    }
+  }, [status, session]);
 
   const uniqueUsers = useMemo(
     () =>
@@ -191,16 +207,25 @@ export default function Home() {
         : automations.filter((a) => a.lifecycle === lifecycleFilter);
 
     const term = searchTerm.trim().toLowerCase();
-    if (!term) return byLifecycle;
+    let filtered = byLifecycle;
+    if (term) {
+      filtered = byLifecycle.filter((a) => {
+        return (
+          a.name.toLowerCase().includes(term) ||
+          a.owner.toLowerCase().includes(term) ||
+          a.tags.some((t) => t.toLowerCase().includes(term))
+        );
+      });
+    }
 
-    return byLifecycle.filter((a) => {
-      return (
-        a.name.toLowerCase().includes(term) ||
-        a.owner.toLowerCase().includes(term) ||
-        a.tags.some((t) => t.toLowerCase().includes(term))
+    if (role !== "admin") {
+      filtered = filtered.filter(
+        (a) => (a.department || "general").toLowerCase() === dept,
       );
-    });
-  }, [automations, lifecycleFilter, searchTerm]);
+    }
+
+    return filtered;
+  }, [automations, lifecycleFilter, searchTerm, role, dept]);
 
   const statCards = useMemo(
     () => [
@@ -250,6 +275,7 @@ export default function Home() {
   }
 
   useEffect(() => {
+    if (status !== "authenticated") return;
     // Fetch any automations that were pushed in via /api/ingest/apps-script
     fetch("/api/ingest/apps-script")
       .then((res) => res.ok ? res.json() : null)
@@ -297,7 +323,24 @@ export default function Home() {
       .catch(() => {
         // ignore fetch errors for local-only use
       });
-  }, []);
+  }, [status]);
+
+  // Redirect unauthenticated users after initial render to avoid router updates during render
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      router.replace("/login");
+    }
+  }, [status, router]);
+
+  if (status === "loading") {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-100">
+        Checking session...
+      </div>
+    );
+  }
+
+  if (status === "unauthenticated") return null;
 
   return (
     <div
@@ -306,6 +349,24 @@ export default function Home() {
         theme === "light" ? "bg-slate-50 text-slate-900" : "bg-[#04070b] text-slate-50",
       )}
     >
+      <button
+        onClick={() => {
+          const origin =
+            typeof window !== "undefined"
+              ? window.location.origin
+              : "http://localhost:3007";
+          signOut({
+            callbackUrl: `${origin}/login`,
+            redirect: true,
+          });
+        }}
+        className="fixed right-5 top-5 z-50 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white backdrop-blur hover:bg-white/20"
+        title="Log out"
+      >
+        <LogOut className="h-4 w-4" />
+        Logout
+      </button>
+
       {theme === "dark" && (
         <div className="pointer-events-none absolute inset-0">
           <div className="absolute -left-24 top-12 h-80 w-80 rounded-full bg-emerald-400/20 blur-[130px] animate-float-slower" />
@@ -357,22 +418,24 @@ export default function Home() {
                   </button>
                 ))}
               </div>
-              <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-200">
-                <span className="opacity-70">Departments</span>
-                {[
-                  { label: "Ops", href: "/departments/operations" },
-                  { label: "Customer", href: "/departments/customer-service" },
-                  { label: "Marketing", href: "/departments/marketing" },
-                ].map((d) => (
-                  <a
-                    key={d.href}
-                    href={d.href}
-                    className="rounded-full px-3 py-1 font-semibold text-slate-200 hover:bg-white/10 transition"
-                  >
-                    {d.label}
-                  </a>
-                ))}
-              </div>
+              {role === "admin" && (
+                <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-200">
+                  <span className="opacity-70">Departments</span>
+                  {[
+                    { label: "Ops", href: "/departments/operations" },
+                    { label: "Customer", href: "/departments/customer-service" },
+                    { label: "Marketing", href: "/departments/marketing" },
+                  ].map((d) => (
+                    <a
+                      key={d.href}
+                      href={d.href}
+                      className="rounded-full px-3 py-1 font-semibold text-slate-200 hover:bg-white/10 transition"
+                    >
+                      {d.label}
+                    </a>
+                  ))}
+                </div>
+              )}
               <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-200">
                 <span className="opacity-70">Providers</span>
                 <Link
@@ -781,144 +844,6 @@ export default function Home() {
           </motion.div>
         </section>
 
-        <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <motion.div
-            initial={{ opacity: 0, y: 18 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.55 }}
-            className="overflow-hidden rounded-2xl border border-white/10 bg-white/5 p-5 shadow-[0_20px_120px_rgba(0,0,0,0.55)] backdrop-blur-xl"
-          >
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm uppercase tracking-[0.18em] text-slate-300">
-                    Provider Signals
-                  </p>
-                  <p className="text-slate-200/80">
-                    Sync state & latency snapshots
-                  </p>
-                </div>
-                <Activity className="h-5 w-5 text-gray-200" />
-              </div>
-            <div className="mt-4 space-y-3">
-              {(["apps-script", "n8n"] as Provider[]).map((provider) => {
-                const related = automations.filter(
-                  (a) => a.provider === provider,
-                );
-                const avgLatency = Math.round(
-                  related.reduce((s, a) => s + a.latencyMs, 0) /
-                    Math.max(related.length, 1),
-                );
-                const healthy = related.filter(
-                  (a) => a.status === "healthy",
-                ).length;
-                return (
-                  <div
-                    key={provider}
-                    className="flex items-center justify-between rounded-xl border border-white/10 bg-white/5 p-3"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div
-                        className={clsx(
-                          "h-10 w-10 rounded-xl border border-white/20 bg-gradient-to-br p-[2px]",
-                          providerStyle[provider].chip,
-                        )}
-                      >
-                        <div className="flex h-full w-full items-center justify-center rounded-[10px] bg-black/60 text-sm font-semibold uppercase text-white/90">
-                          {provider === "apps-script" ? "GS" : "N8"}
-                        </div>
-                      </div>
-                      <div>
-                        <p className="font-semibold text-white">
-                          {providerStyle[provider].label}
-                        </p>
-                        <p className="text-xs text-slate-300">
-                          {healthy}/{related.length} healthy · {avgLatency}ms avg
-                          latency
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="h-2.5 w-2.5 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_0_6px_rgba(52,211,153,0.25)]" />
-                      <span className="text-xs text-slate-300">Sync fresh</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 18 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6 }}
-            className="lg:col-span-2 overflow-hidden rounded-2xl border border-white/10 bg-white/5 p-5 shadow-[0_20px_120px_rgba(0,0,0,0.55)] backdrop-blur-xl"
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm uppercase tracking-[0.18em] text-slate-300">
-                  Run Timeline
-                </p>
-                <p className="text-slate-200/80">
-                  Synthetic bars show relative latency; hover to feel motion
-                </p>
-              </div>
-              <Zap className="h-5 w-5 text-amber-300" />
-            </div>
-
-            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-              {automations.map((automation) => (
-                <motion.div
-                  key={`${automation.id}-timeline`}
-                  whileHover={{ scale: 1.01 }}
-                  className="rounded-xl border border-white/10 bg-white/5 p-3"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div
-                        className={clsx(
-                          "size-2.5 rounded-full",
-                          statusStyle[automation.status].dot,
-                        )}
-                      />
-                      <p className="font-semibold text-white">
-                        {automation.name}
-                      </p>
-                    </div>
-                    <span className="text-xs uppercase text-slate-400">
-                      {providerStyle[automation.provider].label}
-                    </span>
-                  </div>
-                  <div className="mt-3 flex items-end gap-1">
-                    {[0.8, 1, 0.65, 0.9, 0.7].map((factor, idx) => (
-                      <div
-                        key={idx}
-                        className="relative flex-1 overflow-hidden rounded-full bg-white/5"
-                        style={{ height: `${factor * 50 + 10}px` }}
-                      >
-                        <motion.div
-                          initial={{ scaleY: 0 }}
-                          animate={{ scaleY: 1 }}
-                          transition={{ duration: 0.6, delay: idx * 0.05 }}
-                          className={clsx(
-                            "absolute bottom-0 left-0 right-0 origin-bottom rounded-full bg-gradient-to-t",
-                              automation.status === "failed"
-                                ? "from-rose-500/60 to-rose-300/50"
-                                : "from-emerald-500/60 via-teal-500/60 to-amber-400/70",
-                            )}
-                            style={{ height: "100%" }}
-                          />
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-3 flex items-center justify-between text-xs text-slate-300">
-                    <span>Last run {formatTime(automation.lastRun)}</span>
-                    <span>{automation.latencyMs} ms · {Math.round(automation.successRate * 100)}% success</span>
-                  </div>
-                </motion.div>
-              ))}
-            </div>
-          </motion.div>
-        </section>
 
         {failing.length > 0 && (
           <motion.div
