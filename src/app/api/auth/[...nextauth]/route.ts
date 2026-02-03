@@ -15,17 +15,29 @@ const handler = NextAuth({
       async authorize(credentials) {
         const email = (credentials?.email || "").toLowerCase().trim();
         const password = credentials?.password || "";
+        console.log("[nextauth] authorize attempt", { email });
         if (!email || !password) return null;
 
         const { rows } = await pool.query(
           `SELECT id, email, name, department, role, password_hash FROM users WHERE email = $1 LIMIT 1`,
           [email],
         );
-        if (!rows.length) return null;
+        if (!rows.length) {
+          console.log("[nextauth] user not found", { email });
+          return null;
+        }
         const user = rows[0];
         const ok = await bcrypt.compare(password, user.password_hash);
-        if (!ok) return null;
+        if (!ok) {
+          console.log("[nextauth] invalid password", { email });
+          return null;
+        }
 
+        console.log("[nextauth] success", {
+          email,
+          role: user.role,
+          department: user.department,
+        });
         return {
           id: user.id,
           email: user.email,

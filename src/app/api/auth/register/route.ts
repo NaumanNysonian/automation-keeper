@@ -10,7 +10,9 @@ export async function POST(req: Request) {
     const name = (body?.name || "").trim();
     const department = (body?.department || "general").trim() || "general";
 
+    console.log("[register] attempt", { email, department });
     if (!email || !password) {
+      console.log("[register] missing credentials", { emailPresent: !!email });
       return NextResponse.json(
         { error: "email and password are required" },
         { status: 400 },
@@ -37,6 +39,7 @@ export async function POST(req: Request) {
     );
 
     if (!rows.length) {
+      console.log("[register] email already exists", { email });
       return NextResponse.json(
         { error: "email already exists" },
         { status: 409 },
@@ -44,6 +47,7 @@ export async function POST(req: Request) {
     }
 
     const user = rows[0];
+    console.log("[register] success", { email, role: user.role, department: user.department });
     return NextResponse.json({ user });
   } catch (err) {
     console.error("register error", err);

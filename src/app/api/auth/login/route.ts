@@ -8,7 +8,9 @@ export async function POST(req: Request) {
     const email = (body?.email || "").toLowerCase().trim();
     const password = body?.password as string;
 
+    console.log("[login] attempt", { email });
     if (!email || !password) {
+      console.log("[login] missing credentials", { emailPresent: !!email });
       return NextResponse.json(
         { error: "email and password are required" },
         { status: 400 },
@@ -23,15 +25,18 @@ export async function POST(req: Request) {
     );
 
     if (!rows.length) {
+      console.log("[login] user not found", { email });
       return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
     }
 
     const user = rows[0];
     const ok = await bcrypt.compare(password, user.password_hash);
     if (!ok) {
+      console.log("[login] invalid password", { email });
       return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
     }
 
+    console.log("[login] success", { email, role: user.role, department: user.department });
     delete user.password_hash;
     return NextResponse.json({ user });
   } catch (err) {
